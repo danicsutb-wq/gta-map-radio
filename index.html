@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>GTA Map Radio</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
+<style>
+/* ═══════════════════════════════════════════
+   BASE
+═══════════════════════════════════════════ */
+:root {
+  --pad-t: env(safe-area-inset-top, 0px);
+  --pad-b: env(safe-area-inset-bottom, 0px);
+  --pad-l: env(safe-area-inset-left, 0px);
+  --pad-r: env(safe-area-inset-right, 0px);
+  --accent: #7ecbff;
+  --bg:     rgba(0,15,40,.92);
+  --border: rgba(60,120,210,.5);
+}
+* { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+html, body { width:100%; height:100%; overflow:hidden; background:#000; }
+body { font-family:'Arial Narrow',Arial,sans-serif; user-select:none; }
+
+/* temas */
+body.theme-iv  { --accent:#7ecbff; --bg:rgba(0,15,40,.93);   --border:rgba(60,120,210,.55);  --route:#4a9eff; }
+body.theme-v   { --accent:#f5c518; --bg:rgba(10,10,10,.93);  --border:rgba(245,197,24,.45);  --route:#f5c518; }
+body.theme-ac  { --accent:#c8a84b; --bg:rgba(20,14,6,.93);   --border:rgba(200,168,75,.45);  --route:#c8a84b; }
+body.theme-sa  { --accent:#8bc34a; --bg:rgba(10,20,5,.93);   --border:rgba(139,195,74,.45);  --route:#8bc34a; }
+body.theme-ret { --accent:#d4863a; --bg:rgba(30,20,10,.93);  --border:rgba(212,134,58,.45);  --route:#d4863a; }
+body.theme-mar { --accent:#c8b89a; --bg:rgba(28,22,14,.93);  --border:rgba(200,184,154,.45); --route:#c8b89a; }
+
+/* mapa */
+#map { position:absolute; inset:0; z-index:1; }
+.leaflet-control-attribution,
+.leaflet-control-zoom { display:none !important; }
+
+/* ═══════════════════════════════════════════
+   LAYOUT HORIZONTAL (landscape)
+   Zonas fijas:
+   - TOP: nav panel + búsqueda (ancho completo)
+   - IZQUIERDA: radar/minimap + velocímetro
+   - DERECHA: radio compacta
+   - CENTRO: mapa
+═══════════════════════════════════════════ */
+
+/* ── HUD SUPERIOR: calle + hora ── */
+#hud-top {
+  position:absolute; top:0; left:0; right:0; z-index:150;
+  background:linear-gradient(to bottom, var(--bg) 0%, transparent 100%);
+  padding: calc(10px + var(--pad-t)) 16px 24px;
+  display:flex; justify-content:space-between; align-items:flex-start;
+  pointer-events:none;
+}
+body.navigating #hud-top { padding-top: calc(68px + var(--pad-t)); }
+
+.hud-street { display:flex; flex-direction:column; gap:2px; }
+.hud-street-name {
+  font-size:14px; font-weight:700; color:#fff;
+  letter-spacing:.4px; text-transform:uppercase;
+  text-shadow:0 1px 4px rgba(0,0,0,.8);
+}
+.hud-district { font-size:10px; color:var(--accent); letter-spacing:1px; opacity:.7; }
+
+.hud-clock {
+  font-size:30px; font-weight:700; color:#fff;
+  letter-spacing:1px; text-shadow:0 0 12px var(--accent);
+  text-align:right;
+}
+.hud-clock-ampm { font-size:11px; opacity:.5; margin-left:3px; }
+
+/* ── MINIMAP: esquina inferior izquierda ── */
+#minimap-wrap {
+  position:absolute; bottom:16px; left:16px;
+  z-index:150;
+  width:150px; height:150px;
+  border-radius:50%;
+  overflow:hidden;
+  border:2px solid var(--accent);
+  box-shadow:0 0 0 1px rgba(0,0,0,.7), 0 0 18px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+/* modo rectangular en landscape si el minimap es de estilo V/SA */
+body.theme-v   #minimap-wrap,
+body.theme-sa  #minimap-wrap { border-radius:0; width:160px; height:100px; }
+
+#minimap-map { width:100%; height:100%; }
+#minimap-wrap::after {
+  content:''; position:absolute; inset:0; border-radius:inherit;
+  background:radial-gradient(circle, transparent 50%, rgba(0,0,0,.7) 100%);
+  pointer-events:none; z-index:2;
+}
+#minimap-wrap::before {
+  content:''; position:absolute; top:50%; left:50%;
+  transform:translate(-50%,-50%);
+  width:8px; height:8px; border-radius:50%;
+  background:#fff; z-index:3;
+  box-shadow:0 0 6px rgba(255,255,255,.9);
+}
+
+/* ── VELOCÍMETRO: sobre el minimap ── */
+#speedometer {
+  position:absolute; z-index:150;
+  bottom:172px; left:16px;
+  width:150px; text-align:center;
+  pointer-events:none;
+}
+body.theme-v  #speedometer,
+body.theme-sa #speedometer { bottom:122px; }
+
+.speed-num {
+  font-size:36px; font-weight:900; color:#fff; letter-spacing:-2px; line-height:1;
+  text-shadow:0 0 10px var(--accent);
+}
+.speed-unit { font-size:9px; color:var(--accent); letter-spacing:2px; text-transform:uppercase; opacity:.7; }
+.speed-bar { margin:4px auto 0; height:2px; width:80px; background:rgba(255,255,255,.12); border-radius:1px; overflow:hidden; }
+.speed-bar-fill { height:100%; width:0%; background:var(--accent); border-radius:1px; transition:width .4s; }
+
+/* ── RADIO COMPACTA: esquina inferior derecha ── */
+#radio-mini {
+  position:absolute; bottom:16px; right:16px;
+  z-index:150;
+  background:var(--bg);
+  border:1px solid var(--border);
+  border-radius:6px;
+  padding:8px 10px;
+  display:flex; align-items:center; gap:10px;
+  min-width:0; max-width:220px;
+  backdrop-filter:blur(4px);
+}
+#radio-logo {
+  width:36px; height:36px; border-radius:4px; flex-shrink:0;
+  background:var(--border); overflow:hidden;
+  display:flex; align-items:center; justify-content:center;
+  font-size:18px;
+}
+#radio-logo img { width:100%; height:100%; object-fit:cover; border-radius:4px; }
+#radio-info { flex:1; overflow:hidden; min-width:0; }
+#radio-station-name {
+  font-size:11px; font-weight:700; color:var(--accent);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+#radio-track-name {
+  font-size:9px; color:rgba(255,255,255,.45);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  margin-top:1px;
+}
+#radio-controls { display:flex; gap:4px; align-items:center; flex-shrink:0; }
+.r-btn {
+  width:30px; height:30px; border:none; cursor:pointer; border-radius:4px;
+  display:flex; align-items:center; justify-content:center; font-size:13px;
+  background:rgba(255,255,255,.08); color:var(--accent);
+  transition:background .1s;
+}
+.r-btn:active { background:rgba(255,255,255,.2); }
+.r-btn.play { background:var(--accent); color:#000; font-size:14px; }
+
+/* ── ETA barra ── */
+#nav-eta {
+  position:absolute; z-index:160;
+  left:180px; right:240px; bottom:28px;
+  background:var(--bg); border:1px solid var(--border);
+  border-radius:4px; padding:7px 14px;
+  display:none; align-items:center; gap:14px;
+}
+body.navigating #nav-eta { display:flex; }
+
+.eta-item { display:flex; flex-direction:column; align-items:center; gap:1px; }
+.eta-val  { font-size:15px; font-weight:700; color:#fff; }
+.eta-lbl  { font-size:8px; letter-spacing:1.5px; text-transform:uppercase; color:var(--accent); opacity:.6; }
+.eta-sep  { width:1px; height:26px; background:rgba(255,255,255,.1); }
+
+/* ── PANEL NAVEGACIÓN (giro a giro) ── */
+#nav-panel {
+  position:absolute; top:0; left:0; right:0; z-index:160;
+  display:none; align-items:stretch; height:60px;
+}
+body.navigating #nav-panel { display:flex; }
+
+.nav-arrow-box {
+  width:60px; flex-shrink:0;
+  display:flex; align-items:center; justify-content:center;
+  font-size:26px; background:var(--accent); color:#000;
+}
+body.theme-iv .nav-arrow-box { background:rgba(0,40,90,.97); color:var(--accent); }
+body.theme-ac .nav-arrow-box { background:rgba(40,28,8,.97); color:var(--accent); }
+body.theme-mar .nav-arrow-box { background:rgba(40,32,20,.97); color:var(--accent); }
+
+.nav-text-box {
+  flex:1; padding:8px 14px; background:var(--bg);
+  display:flex; flex-direction:column; justify-content:center;
+}
+.nav-instruction { font-size:15px; font-weight:700; color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.nav-dist-txt { font-size:11px; color:var(--accent); margin-top:2px; opacity:.8; }
+.nav-close {
+  width:44px; flex-shrink:0; border:none; cursor:pointer;
+  background:var(--bg); color:rgba(255,255,255,.4); font-size:18px;
+  display:flex; align-items:center; justify-content:center;
+}
+
+/* ── BARRA DE BÚSQUEDA ── */
+#search-wrap {
+  position:absolute; top:calc(10px + var(--pad-t)); left:50%; transform:translateX(-50%);
+  z-index:200; width:min(380px, 55vw);
+  display:flex; flex-direction:column;
+}
+body.navigating #search-wrap { top:calc(68px + var(--pad-t)); }
+
+#search-row { display:flex; }
+#search-input {
+  flex:1; height:38px; border:none; outline:none;
+  font-size:13px; font-weight:600; padding:0 12px;
+  font-family:'Arial Narrow',Arial,sans-serif;
+  background:var(--bg); color:#fff;
+  border:1px solid var(--border); border-right:none;
+  caret-color:var(--accent);
+}
+#search-input::placeholder { color:rgba(255,255,255,.3); }
+#search-btn {
+  height:38px; width:42px; border:none; cursor:pointer; flex-shrink:0;
+  background:var(--accent); color:#000; font-size:16px;
+  display:flex; align-items:center; justify-content:center;
+}
+body.theme-iv #search-btn { background:#2a5f9e; color:#fff; }
+body.theme-ac #search-btn { background:#c8a84b; color:#000; }
+body.theme-sa #search-btn { background:#8bc34a; color:#000; }
+body.theme-ret #search-btn { background:#d4863a; color:#fff; }
+body.theme-mar #search-btn { background:#c8b89a; color:#000; }
+
+#search-cancel {
+  height:38px; width:36px; border:none; cursor:pointer; flex-shrink:0;
+  background:var(--bg); color:rgba(255,255,255,.4); font-size:16px;
+  border:1px solid var(--border); border-left:none;
+  display:none; align-items:center; justify-content:center;
+}
+#search-results {
+  display:none; flex-direction:column; max-height:200px; overflow-y:auto;
+}
+.search-item {
+  padding:10px 12px; cursor:pointer; font-size:12px; line-height:1.4;
+  background:var(--bg); color:#fff;
+  border-bottom:1px solid rgba(255,255,255,.06);
+}
+.search-item:active { background:rgba(255,255,255,.1); }
+.search-item-name { font-weight:700; color:var(--accent); }
+.search-item-addr { font-size:10px; opacity:.5; margin-top:1px; }
+
+/* ── DESPLEGABLE DE ESTILOS ── */
+#style-dropdown {
+  position:absolute; top:calc(10px + var(--pad-t)); left:16px;
+  z-index:200;
+}
+body.navigating #style-dropdown { top:calc(68px + var(--pad-t)); }
+
+#style-current {
+  display:flex; align-items:center; gap:8px; cursor:pointer;
+  background:var(--bg); border:1px solid var(--border);
+  padding:6px 10px 6px 8px; border-radius:4px; white-space:nowrap;
+}
+.style-dot {
+  width:10px; height:10px; border-radius:50%;
+  background:var(--accent); flex-shrink:0;
+}
+#style-current-name { font-size:11px; font-weight:700; color:var(--accent); letter-spacing:.5px; }
+#style-caret { font-size:9px; color:var(--accent); opacity:.6; margin-left:2px; }
+
+#style-list {
+  display:none; flex-direction:column;
+  background:var(--bg); border:1px solid var(--border);
+  border-top:none; border-radius:0 0 4px 4px;
+  overflow:hidden; min-width:150px;
+}
+#style-list.open { display:flex; }
+
+.style-opt {
+  display:flex; align-items:center; gap:8px;
+  padding:9px 10px; cursor:pointer; font-size:11px; color:#fff;
+  border-bottom:1px solid rgba(255,255,255,.05); font-weight:600;
+  transition:background .1s;
+}
+.style-opt:last-child { border-bottom:none; }
+.style-opt:active { background:rgba(255,255,255,.1); }
+.style-opt .s-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+.style-opt.active { color:var(--accent); }
+
+/* ── AVISO GPS ── */
+#gps-notice {
+  position:absolute; bottom:50%; left:50%; transform:translate(-50%,50%);
+  z-index:500; background:rgba(0,0,0,.85);
+  border:1px solid rgba(255,255,255,.18); border-radius:6px;
+  color:#fff; padding:16px 22px; text-align:center;
+  font-size:13px; line-height:1.7; max-width:300px; display:none;
+}
+</style>
+</head>
+<body class="theme-iv">
+
+<!-- MAPA PRINCIPAL -->
+<div id="map"></div>
+
+<!-- HUD SUPERIOR -->
+<div id="hud-top">
+  <div class="hud-street">
+    <div class="hud-street-name" id="hud-street">Buscando GPS…</div>
+    <div class="hud-district"    id="hud-district"></div>
+  </div>
+  <div class="hud-clock" id="hud-clock">00:00 <span class="hud-clock-ampm">AM</span></div>
+</div>
+
+<!-- PANEL NAVEGACIÓN -->
+<div id="nav-panel">
+  <div class="nav-arrow-box" id="nav-arrow">↑</div>
+  <div class="nav-text-box">
+    <div class="nav-instruction" id="nav-instruction">Continúa recto</div>
+    <div class="nav-dist-txt"    id="nav-dist-txt">—</div>
+  </div>
+  <button class="nav-close" onclick="cancelarNavegacion()">✕</button>
+</div>
+
+<!-- DESPLEGABLE DE ESTILOS (esquina sup. izquierda) -->
+<div id="style-dropdown">
+  <div id="style-current" onclick="toggleStyleList()">
+    <div class="style-dot"></div>
+    <span id="style-current-name">GTA IV</span>
+    <span id="style-caret">▼</span>
+  </div>
+  <div id="style-list">
+    <div class="style-opt active" data-theme="theme-iv"  onclick="setTheme('theme-iv','GTA IV','#7ecbff')">
+      <div class="s-dot" style="background:#7ecbff"></div> GTA IV
+    </div>
+    <div class="style-opt" data-theme="theme-v"   onclick="setTheme('theme-v','GTA V','#f5c518')">
+      <div class="s-dot" style="background:#f5c518"></div> GTA V
+    </div>
+    <div class="style-opt" data-theme="theme-ac"  onclick="setTheme('theme-ac','Assassin\'s Creed IV','#c8a84b')">
+      <div class="s-dot" style="background:#c8a84b"></div> Assassin's Creed IV
+    </div>
+    <div class="style-opt" data-theme="theme-sa"  onclick="setTheme('theme-sa','GTA San Andreas','#8bc34a')">
+      <div class="s-dot" style="background:#8bc34a"></div> GTA San Andreas
+    </div>
+    <div class="style-opt" data-theme="theme-ret" onclick="setTheme('theme-ret','Retro','#d4863a')">
+      <div class="s-dot" style="background:#d4863a"></div> Retro
+    </div>
+    <div class="style-opt" data-theme="theme-mar" onclick="setTheme('theme-mar','Mapa del Merodeador','#c8b89a')">
+      <div class="s-dot" style="background:#c8b89a"></div> Mapa del Merodeador
+    </div>
+  </div>
+</div>
+
+<!-- BARRA DE BÚSQUEDA (centro superior) -->
+<div id="search-wrap">
+  <div id="search-row">
+    <input  id="search-input" type="text" placeholder="Buscar destino…"
+            oninput="onSearchInput()" onkeydown="onSearchKey(event)"/>
+    <button id="search-btn"    onclick="buscarDestino()">🔍</button>
+    <button id="search-cancel" onclick="cancelarBusqueda()">✕</button>
+  </div>
+  <div id="search-results"></div>
+</div>
+
+<!-- MINIMAP (esquina inferior izquierda) -->
+<div id="minimap-wrap">
+  <div id="minimap-map"></div>
+</div>
+
+<!-- VELOCÍMETRO (sobre minimap) -->
+<div id="speedometer">
+  <div class="speed-num" id="speed-num">0</div>
+  <div class="speed-unit">km/h</div>
+  <div class="speed-bar"><div class="speed-bar-fill" id="speed-bar-fill"></div></div>
+</div>
+
+<!-- RADIO COMPACTA (esquina inferior derecha) -->
+<div id="radio-mini">
+  <div id="radio-logo">📻</div>
+  <div id="radio-info">
+    <div id="radio-station-name">Liberty City HC</div>
+    <div id="radio-track-name">Seleccionando…</div>
+  </div>
+  <div id="radio-controls">
+    <button class="r-btn play" id="r-play" onclick="togglePlay()" title="Play/Pausa">▶</button>
+    <button class="r-btn"      onclick="nextStation()"            title="Siguiente">⏭</button>
+  </div>
+</div>
+
+<!-- ETA barra -->
+<div id="nav-eta">
+  <div class="eta-item"><div class="eta-val" id="eta-time">--</div><div class="eta-lbl">min</div></div>
+  <div class="eta-sep"></div>
+  <div class="eta-item"><div class="eta-val" id="eta-dist">--</div><div class="eta-lbl">km rest.</div></div>
+  <div class="eta-sep"></div>
+  <div class="eta-item"><div class="eta-val" id="eta-arr">--:--</div><div class="eta-lbl">llegada</div></div>
+</div>
+
+<!-- AVISO GPS -->
+<div id="gps-notice"></div>
+
+<!-- Leaflet JS -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+/* ═══════════════════════════════════════════
+   TILES POR TEMA (CARTO con key)
+═══════════════════════════════════════════ */
+const KEY = 'cb1_5een_1_1c29df471ae1f94e952b1e6f';
+const TILES = {
+  'theme-iv':  `https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png?key=${KEY}`,
+  'theme-v':   `https://basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png?key=${KEY}`,
+  'theme-ac':  `https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png?key=${KEY}`,
+  'theme-sa':  `https://basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png?key=${KEY}`,
+  'theme-ret': `https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png?key=${KEY}`,
+  'theme-mar': `https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png?key=${KEY}`,
+};
+const TILE_OPTS = { maxZoom:19, subdomains:'' };
+const DEFAULT   = [40.4168, -3.7038];
+
+/* ═══════════════════════════════════════════
+   MAPAS
+═══════════════════════════════════════════ */
+const mainMap = L.map('map',        { zoomControl:false, attributionControl:false }).setView(DEFAULT, 16);
+const miniMap = L.map('minimap-map',{ zoomControl:false, attributionControl:false,
+                                      dragging:false, touchZoom:false, scrollWheelZoom:false,
+                                      doubleClickZoom:false, keyboard:false }).setView(DEFAULT, 14);
+
+let mainTile = L.tileLayer(TILES['theme-iv'], TILE_OPTS).addTo(mainMap);
+let miniTile = L.tileLayer(TILES['theme-iv'], TILE_OPTS).addTo(miniMap);
+
+/* Marcador de posición */
+function crearIconoFlecha(heading) {
+  return L.divIcon({
+    className:'',
+    html:`<svg width="16" height="20" viewBox="0 0 16 20"
+            style="transform:rotate(${heading||0}deg);filter:drop-shadow(0 0 3px #fff)">
+            <polygon points="8,0 16,20 8,14 0,20" fill="white" stroke="#000" stroke-width="1.2"/>
+          </svg>`,
+    iconSize:[16,20], iconAnchor:[8,10]
+  });
+}
+const marker = L.marker(DEFAULT, { icon:crearIconoFlecha(0), zIndexOffset:1000 }).addTo(mainMap);
+
+/* ═══════════════════════════════════════════
+   SELECTOR DE TEMA / ESTILO
+═══════════════════════════════════════════ */
+let temaActual = 'theme-iv';
+
+function toggleStyleList() {
+  document.getElementById('style-list').classList.toggle('open');
+}
+document.addEventListener('click', e => {
+  if (!document.getElementById('style-dropdown').contains(e.target))
+    document.getElementById('style-list').classList.remove('open');
+});
+
+function setTheme(theme, nombre, color) {
+  document.body.className = theme;
+  temaActual = theme;
+  document.getElementById('style-current-name').textContent = nombre;
+  document.getElementById('style-list').classList.remove('open');
+  document.querySelectorAll('.style-opt').forEach(o =>
+    o.classList.toggle('active', o.dataset.theme === theme));
+
+  mainMap.removeLayer(mainTile);
+  miniMap.removeLayer(miniTile);
+  mainTile = L.tileLayer(TILES[theme], TILE_OPTS).addTo(mainMap);
+  miniTile = L.tileLayer(TILES[theme], TILE_OPTS).addTo(miniMap);
+
+  if (rutaLayer) {
+    rutaLayer.setStyle({ color: getComputedStyle(document.body).getPropertyValue('--route').trim() });
+  }
+  setTimeout(() => miniMap.invalidateSize(), 60);
+}
+
+/* ═══════════════════════════════════════════
+   RELOJ
+═══════════════════════════════════════════ */
+function tickClock() {
+  const now = new Date();
+  let h = now.getHours(), m = now.getMinutes();
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const h12  = h % 12 || 12;
+  const pad  = n => String(n).padStart(2,'0');
+  document.getElementById('hud-clock').innerHTML =
+    `${pad(h12)}:${pad(m)} <span class="hud-clock-ampm">${ampm}</span>`;
+}
+setInterval(tickClock, 1000); tickClock();
+
+/* ═══════════════════════════════════════════
+   ESTACIONES DE RADIO
+   Añade streamUrl con la URL .mp3 / .m3u8 real
+   Puedes sacar streams de: radio.garden
+═══════════════════════════════════════════ */
+const stations = [
+  { name:'Liberty City HC', track:'Nicky Barnes – Respect',       emoji:'🎤', streamUrl:'' },
+  { name:'Los Santos FM',   track:'Wavves – Post Acid',           emoji:'🎸', streamUrl:'' },
+  { name:'FlyLo FM',        track:'Flying Lotus – Tea Leaf',      emoji:'🎧', streamUrl:'' },
+  { name:'Non-Stop-Pop FM', track:'Fergie – Glamorous',           emoji:'🎵', streamUrl:'' },
+  { name:'Jazz Nation',     track:'Blue Miles – Davis',           emoji:'🎷', streamUrl:'' },
+  { name:'Vinewood Blvd',   track:'The Babies – Alligator',       emoji:'🎶', streamUrl:'' },
+  { name:'Radio Garden',    track:'radio.garden',                 emoji:'🌍', streamUrl:'', url:'https://radio.garden/?hl=es' },
+];
+let stIdx   = 0;
+let playing = false;
+let audio   = null;
+
+function applyStation() {
+  const s = stations[stIdx];
+  document.getElementById('radio-station-name').textContent = s.name;
+  document.getElementById('radio-track-name').textContent   = s.track;
+  document.getElementById('radio-logo').textContent         = s.emoji;
+  if (audio) { audio.pause(); audio = null; }
+  if (playing && s.streamUrl) {
+    audio = new Audio(s.streamUrl);
+    audio.play().catch(()=>{});
+  }
+}
+function nextStation() { stIdx = (stIdx + 1) % stations.length; applyStation(); }
+function prevStation() { stIdx = (stIdx - 1 + stations.length) % stations.length; applyStation(); }
+function togglePlay() {
+  playing = !playing;
+  document.getElementById('r-play').textContent = playing ? '⏸' : '▶';
+  document.getElementById('r-play').title = playing ? 'Pausar' : 'Reproducir';
+  const s = stations[stIdx];
+  if (playing && s.streamUrl) {
+    if (!audio) audio = new Audio(s.streamUrl);
+    audio.play().catch(()=>{});
+  } else if (audio) { audio.pause(); }
+  // Si es Radio Garden, abre en nueva pestaña
+  if (playing && s.url) window.open(s.url, '_blank');
+}
+applyStation();
+
+/* ═══════════════════════════════════════════
+   GPS — POR CAPAS
+═══════════════════════════════════════════ */
+let posActual   = null;
+let gpsActivo   = false;
+let watchId     = null;
+let lastGeocode = 0;
+
+const gpsNotice = document.getElementById('gps-notice');
+function mostrarAviso(html) { gpsNotice.innerHTML = html; gpsNotice.style.display = 'block'; }
+function ocultarAviso()     { gpsNotice.style.display = 'none'; }
+
+function aplicarPosicion(lat, lng, speed, heading) {
+  posActual = { lat, lng };
+  const latlng = [lat, lng];
+  mainMap.panTo(latlng);
+  miniMap.panTo(latlng);
+  marker.setLatLng(latlng);
+  if (heading !== null && heading !== undefined)
+    marker.setIcon(crearIconoFlecha(heading));
+
+  const kmh = speed ? Math.round(speed * 3.6) : 0;
+  document.getElementById('speed-num').textContent      = kmh;
+  document.getElementById('speed-bar-fill').style.width = Math.min(kmh / 180 * 100, 100) + '%';
+
+  const now = Date.now();
+  if (now - lastGeocode > 3000) {
+    lastGeocode = now;
+    fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&accept-language=es`)
+      .then(r => r.json())
+      .then(d => {
+        const a  = d.address || {};
+        const st = a.road || a.pedestrian || a.path || 'Carretera desconocida';
+        const di = a.suburb || a.quarter || a.city || a.town || '';
+        document.getElementById('hud-street').textContent   = st;
+        document.getElementById('hud-district').textContent = di;
+      }).catch(()=>{});
+  }
+}
+
+function ubicarPorIP() {
+  mostrarAviso('📡 GPS no disponible.<br>Usando ubicación por IP…');
+  fetch('https://ipapi.co/json/')
+    .then(r => r.json())
+    .then(d => {
+      if (d.latitude) { ocultarAviso(); aplicarPosicion(d.latitude, d.longitude, 0, null); }
+      else mostrarAviso('⚠️ Sin ubicación. Abre desde GitHub Pages o HTTPS.');
+    }).catch(() => mostrarAviso('⚠️ Sin GPS ni conexión.'));
+}
+
+function iniciarGPS() {
+  if (!navigator.geolocation) { ubicarPorIP(); return; }
+  mostrarAviso('🛰️ Solicitando permiso de ubicación…');
+  const timer = setTimeout(() => { if (!gpsActivo) { navigator.geolocation.clearWatch(watchId); ubicarPorIP(); } }, 8000);
+  watchId = navigator.geolocation.watchPosition(
+    pos => {
+      clearTimeout(timer);
+      if (!gpsActivo) { gpsActivo = true; ocultarAviso(); }
+      aplicarPosicion(pos.coords.latitude, pos.coords.longitude, pos.coords.speed, pos.coords.heading);
+    },
+    err => { clearTimeout(timer); if (!gpsActivo) ubicarPorIP(); },
+    { enableHighAccuracy:true, maximumAge:1000, timeout:7000 }
+  );
+}
+iniciarGPS();
+
+/* ═══════════════════════════════════════════
+   BÚSQUEDA — Nominatim
+═══════════════════════════════════════════ */
+let searchTimer = null;
+
+function onSearchInput() {
+  const q = document.getElementById('search-input').value.trim();
+  document.getElementById('search-cancel').style.display = q ? 'flex' : 'none';
+  clearTimeout(searchTimer);
+  if (q.length < 3) { cerrarSugerencias(); return; }
+  searchTimer = setTimeout(() => fetchSugerencias(q), 400);
+}
+function onSearchKey(e) { if (e.key === 'Enter') buscarDestino(); }
+
+function fetchSugerencias(q) {
+  const c = posActual ? `&lat=${posActual.lat}&lon=${posActual.lng}` : '';
+  fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=5&accept-language=es${c}`)
+    .then(r => r.json()).then(mostrarSugerencias).catch(()=>{});
+}
+function mostrarSugerencias(items) {
+  const box = document.getElementById('search-results');
+  if (!items.length) { box.style.display = 'none'; return; }
+  box.innerHTML = items.map(it => {
+    const nombre = it.display_name.split(',')[0];
+    const resto  = it.display_name.split(',').slice(1,3).join(',').trim();
+    return `<div class="search-item" onclick="seleccionarDestino(${it.lat},${it.lon},'${nombre.replace(/'/g,"\\'")}')">
+              <div class="search-item-name">${nombre}</div>
+              <div class="search-item-addr">${resto}</div>
+            </div>`;
+  }).join('');
+  box.style.display = 'flex';
+}
+function cerrarSugerencias() { document.getElementById('search-results').style.display = 'none'; }
+function buscarDestino()     { const q = document.getElementById('search-input').value.trim(); if (q) fetchSugerencias(q); }
+function cancelarBusqueda()  { document.getElementById('search-input').value=''; document.getElementById('search-cancel').style.display='none'; cerrarSugerencias(); }
+function seleccionarDestino(lat, lng, nombre) { cerrarSugerencias(); cancelarBusqueda(); trazarRuta(lat, lng, nombre); }
+
+/* ═══════════════════════════════════════════
+   ROUTING — OSRM
+═══════════════════════════════════════════ */
+let rutaLayer = null, destinoMarker = null;
+let pasos = [], pasoActual = 0, navInterval = null;
+
+const FLECHAS = {
+  'turn-left':'↰','turn-right':'↱','turn-slight-left':'↖','turn-slight-right':'↗',
+  'turn-sharp-left':'⬅','turn-sharp-right':'➡','uturn':'↩','roundabout':'⟲',
+  'rotary':'⟲','merge':'↑','on ramp':'↗','off ramp':'↘','fork':'⬆',
+  'straight':'↑','depart':'📍','arrive':'🏁',
+};
+function flechaManiobra(s) {
+  const k = `${s.maneuver?.type||''}-${s.maneuver?.modifier||''}`.toLowerCase().replace(/-$/,'');
+  return FLECHAS[k] || FLECHAS[s.maneuver?.type||''] || '↑';
+}
+const fmDist = m => m >= 1000 ? (m/1000).toFixed(1)+' km' : Math.round(m)+' m';
+const fmMin  = s => { const m=Math.round(s/60); return m<60?`${m} min`:`${Math.floor(m/60)}h ${m%60}min`; };
+
+async function trazarRuta(dLat, dLng) {
+  if (!posActual) { mostrarAviso('⚠️ Espera a que se detecte el GPS.'); setTimeout(ocultarAviso,3000); return; }
+  if (destinoMarker) mainMap.removeLayer(destinoMarker);
+  destinoMarker = L.marker([dLat,dLng],{
+    icon:L.divIcon({ className:'', html:`<div style="background:var(--route,#f5c518);width:14px;height:14px;border-radius:50%;border:2px solid #000;box-shadow:0 0 6px var(--route,#f5c518)"></div>`, iconSize:[14,14], iconAnchor:[7,7] })
+  }).addTo(mainMap);
+  mostrarAviso('🗺️ Calculando ruta…');
+  try {
+    const url = `https://router.project-osrm.org/route/v1/driving/${posActual.lng},${posActual.lat};${dLng},${dLat}?overview=full&geometries=geojson&steps=true`;
+    const data = await fetch(url).then(r=>r.json());
+    if (data.code !== 'Ok') throw new Error();
+    ocultarAviso();
+    const ruta  = data.routes[0];
+    const color = getComputedStyle(document.body).getPropertyValue('--route').trim() || '#4a9eff';
+    if (rutaLayer) mainMap.removeLayer(rutaLayer);
+    rutaLayer = L.geoJSON(ruta.geometry,{ style:{ color, weight:5, opacity:.85, lineJoin:'round', lineCap:'round' } }).addTo(mainMap);
+    mainMap.fitBounds(rutaLayer.getBounds(),{ padding:[60,60] });
+    pasos = ruta.legs.flatMap(l=>l.steps); pasoActual = 0;
+    document.body.classList.add('navigating');
+    actualizarETA(ruta); mostrarPaso(0); iniciarMonitor();
+  } catch(e) { ocultarAviso(); mostrarAviso('⚠️ No se pudo calcular la ruta.'); setTimeout(ocultarAviso,4000); }
+}
+
+function mostrarPaso(idx) {
+  if (idx >= pasos.length) return;
+  const p = pasos[idx];
+  const t = p.name ? `${p.maneuver?.type==='turn'?'Gira en':'Continúa por'} ${p.name}` : (p.maneuver?.type==='arrive'?'¡Has llegado!':'Continúa recto');
+  document.getElementById('nav-arrow').textContent       = flechaManiobra(p);
+  document.getElementById('nav-instruction').textContent = t;
+  document.getElementById('nav-dist-txt').textContent    = `En ${fmDist(p.distance)}`;
+  hablar(`${t}, en ${fmDist(p.distance)}`);
+}
+function actualizarETA(ruta) {
+  const dR = pasos.slice(pasoActual).reduce((s,p)=>s+p.distance,0);
+  const tR = pasos.slice(pasoActual).reduce((s,p)=>s+p.duration,0);
+  const ll = new Date(Date.now()+tR*1000);
+  const pad= n=>String(n).padStart(2,'0');
+  document.getElementById('eta-time').textContent = fmMin(tR);
+  document.getElementById('eta-dist').textContent = (dR/1000).toFixed(1);
+  document.getElementById('eta-arr').textContent  = `${pad(ll.getHours())}:${pad(ll.getMinutes())}`;
+}
+function iniciarMonitor() {
+  if (navInterval) clearInterval(navInterval);
+  navInterval = setInterval(()=>{
+    if (!posActual || pasoActual >= pasos.length-1) return;
+    const p = pasos[pasoActual]; if (!p.geometry?.coordinates?.length) { pasoActual++; return; }
+    const c = p.geometry.coordinates, fin = c[c.length-1];
+    if (mainMap.distance([posActual.lat,posActual.lng],[fin[1],fin[0]]) < 30) {
+      pasoActual++; mostrarPaso(pasoActual); actualizarETA();
+      if (pasos[pasoActual]?.maneuver?.type==='arrive') setTimeout(()=>{ hablar('Has llegado a tu destino'); cancelarNavegacion(); },2000);
+    }
+  },1500);
+}
+function cancelarNavegacion() {
+  document.body.classList.remove('navigating');
+  if (rutaLayer)     { mainMap.removeLayer(rutaLayer);     rutaLayer=null; }
+  if (destinoMarker) { mainMap.removeLayer(destinoMarker); destinoMarker=null; }
+  if (navInterval)   { clearInterval(navInterval); navInterval=null; }
+  pasos=[]; pasoActual=0; window.speechSynthesis?.cancel();
+}
+
+/* ═══════════════════════════════════════════
+   VOZ — Web Speech API
+═══════════════════════════════════════════ */
+let vozEs = null;
+if (window.speechSynthesis) {
+  const cargar = ()=>{ vozEs = speechSynthesis.getVoices().find(v=>v.lang.startsWith('es'))||null; };
+  speechSynthesis.onvoiceschanged = cargar; cargar();
+}
+function hablar(t) {
+  if (!window.speechSynthesis) return;
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(t);
+  u.lang='es-ES'; u.rate=1.05; if(vozEs) u.voice=vozEs;
+  speechSynthesis.speak(u);
+}
+
+/* ═══════════════════════════════════════════
+   PANTALLA COMPLETA — oculta barra navegador
+   Se activa con el primer toque en la pantalla
+═══════════════════════════════════════════ */
+function pedirPantallaCompleta() {
+  const el = document.documentElement;
+  const fn = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen;
+  if (fn) fn.call(el).catch(()=>{});
+}
+document.addEventListener('click', pedirPantallaCompleta, { once:true });
+// En iOS no hay fullscreen API; al menos forzamos scroll para ocultar barra
+window.scrollTo(0, 1);
+</script>
+</body>
+</html>
